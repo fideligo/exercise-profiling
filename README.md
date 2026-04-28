@@ -1,4 +1,4 @@
-# Reflection - Milestone 1: Profiling & Performance Analysis
+# Reflection - Milestone 1 & 2: Profiling & Performance Analysis
 
 ### 1. Observasi Proses Data Seeding
 Selama pengerjaan Milestone 1, ditemukan bahwa proses seeding data ke database mengalami kendala performa yang signifikan. Terjadi duplikasi eksekusi yang mengakibatkan jumlah data membengkak menjadi **40.000 mahasiswa** dan **61.174 record** pada tabel `student_courses`.
@@ -6,24 +6,24 @@ Selama pengerjaan Milestone 1, ditemukan bahwa proses seeding data ke database m
 **Analisis Masalah:**
 Proses seeding sangat lambat karena penggunaan `repository.save()` di dalam iterasi loop (N+1 writes). Hal ini menciptakan bottleneck pada I/O disk karena setiap record memicu transaksi database individual.
 
-### 2. Hasil Eksekusi JMeter
+### 2. Hasil Eksekusi JMeter (Sebelum Optimasi)
 Berikut adalah hasil pengujian pada ketiga endpoint dengan beban data ~61k record:
 
 | Nama Sampler | Endpoint | Status | Keterangan |
 | --- | --- | --- | --- |
-| `all-student-request` | `/all-student-data` | Success | Paling lambat karena payload JSON sangat besar. |
+| `all-student-request` | `/all-student` | Success | Paling lambat (hingga ~12 menit) karena payload JSON sangat besar dan adanya N+1 Query. |
 | `all-student-name` | `/all-student-name` | Success | Cukup lambat, memproses list String nama mahasiswa. |
-| `highest-gpa` | `/highest-gpa` | Success | Cepat secara I/O, namun memicu lonjakan CPU untuk sorting. |
+| `highest-gpa` | `/highest-gpa` | Success | Cepat secara I/O, namun memicu lonjakan CPU untuk sorting di level Java. |
 
 #### Screenshot Hasil JMeter:
 ![JMeter Test Results](./doc/images/test-results.png)
 
 ### 3. Analisis Profiling (Hot Spots)
-Berdasarkan pengamatan menggunakan Profiling Tool (VisualVM/JProfiler):
+Berdasarkan pengamatan menggunakan Profiling Tool (VisualVM/IntelliJ Profiler):
 - **CPU Spikes:** Lonjakan CPU terlihat jelas saat melakukan pencarian mahasiswa dengan IPK tertinggi di antara puluhan ribu data.
-- **Memory/Heap Usage:** Penggunaan memori meningkat tajam saat aplikasi mencoba memuat seluruh daftar mahasiswa ke dalam RAM untuk dikirim sebagai response JSON.
+- **Memory/Heap Usage:** Penggunaan memori meningkat tajam saat aplikasi mencoba memuat seluruh daftar mahasiswa ke dalam RAM untuk dikirim sebagai response JSON, serta adanya pembuatan objek String secara masif pada endpoint `/all-student-name`.
 
-### 4. Kesimpulan
+### 4. Kesimpulan Awal
 Profiling membantu mengidentifikasi bahwa pendekatan imperatif sederhana (seperti looping manual) tidak efisien untuk dataset besar. Diperlukan optimasi seperti Batch Processing atau penggunaan query database yang lebih spesifik untuk meningkatkan skalabilitas aplikasi.
 
 ### 5. Bukti Eksekusi JMeter melalui Command Line (CLI)
@@ -43,7 +43,22 @@ Menunjukkan hasil eksekusi terminal untuk pencarian data tunggal dengan IPK tert
 
 ---
 
-### 4. Reflection
+### 6. Milestone 2: Refactoring & Performance Comparison (Sesudah Optimasi)
+
+Setelah mengidentifikasi *bottleneck* melalui IntelliJ Profiler, dilakukan beberapa *refactoring* pada `StudentService.java`:
+1.  **Mengatasi N+1 Query (`/all-student`):** Menghapus *looping* pemanggilan database dan menggantinya dengan satu kali eksekusi `studentCourseRepository.findAll()`.
+2.  **Database Offloading (`/highest-gpa`):** Memindahkan proses pencarian nilai tertinggi dari memori Java ke eksekusi *query database* (`findFirstByOrderByGpaDesc()`).
+3.  **Memory Optimization (`/all-student-name`):** Mengganti penggabungan String (`+=`) yang boros memori dengan `Collectors.joining(", ")` menggunakan Java Stream API.
+
+#### Screenshot Hasil JMeter Setelah Refactoring:
+![JMeter Results After Refactoring](./doc/images/test-results-after-refactoring.png)
+
+**Konklusi Perbandingan Performa:**
+Terjadi peningkatan performa yang sangat drastis dan jauh melampaui target 20%. Waktu eksekusi untuk endpoint terberat (`/all-student`) yang awalnya memakan waktu sekitar **12 menit**, kini berhasil dipangkas menjadi hanya **19 detik**. Endpoint lainnya mengeksekusi data secara instan dalam hitungan millisecond. Hal ini membuktikan bahwa arsitektur kode yang teroptimasi sangat krusial saat menangani volume data berskala besar (61.174 records).
+
+---
+
+### 7. Reflection
 
 **1. What is the difference between the approach of performance testing with JMeter and profiling with IntelliJ Profiler in the context of optimizing application performance?**
 JMeter menggunakan pendekatan *black-box testing* (dari luar), di mana ia mensimulasikan beban pengguna nyata untuk mengukur **apa** yang terjadi dan **berapa lama** waktu responnya (seperti metrik *throughput* dan *latency*). Sebaliknya, IntelliJ Profiler menggunakan pendekatan *white-box* (dari dalam) untuk melihat jeroan aplikasi. Profiler tidak mensimulasikan beban, melainkan mengukur **mengapa** dan **di mana** kelambatan itu terjadi pada level kode (mengawasi alokasi *Heap Memory*, penggunaan CPU per *thread*, dan *Call Tree* method).
